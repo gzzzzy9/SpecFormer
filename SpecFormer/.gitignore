@@ -1,0 +1,29 @@
+# Data
+data/raw/
+data/processed/
+data/splits/
+
+# Experiments
+experiments/checkpoints/
+experiments/logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Env
+.env
+*.env
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Wandb
+wandb/
