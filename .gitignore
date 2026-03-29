@@ -1,7 +1,11 @@
 # Data
+<<<<<<< Updated upstream
 data/raw/
 data/processed/
 data/splits/
+=======
+data/
+>>>>>>> Stashed changes
 
 # Experiments
 experiments/checkpoints/

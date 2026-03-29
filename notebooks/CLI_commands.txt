@@ -1,0 +1,26 @@
+# Preprocessing
+python scripts/preprocess.py \
+    --master ../Nanopore_results/wetwork_info/Nanopore_wetwork_info.xlsx \
+    --nanopore_dir ../Nanopore_results/ \
+    --exp_name clone_filtered_max3 \
+    --include_naive \
+    > experiments/logs/preprocessing_out_20260327.txt
+
+# 训练
+python scripts/train.py \
+    --config experiments/configs/small.yaml \
+    --splits_dir data/splits/clone_filtered_max3
+
+# 评估（用同一个 splits_dir）
+python scripts/evaluate.py \
+    --checkpoint experiments/checkpoints/small/seed42/best_model.pt \
+    --config     experiments/configs/small.yaml \
+    --splits_dir data/splits/clone_filtered_max3 \
+    --out_dir    experiments/logs/eval/clone_filtered/
+
+python3 -c "
+import pandas as pd
+for s in ['train','val','test']:
+    df = pd.read_csv(f'data/splits/clone_filtered_max3_with_naive/{s}.csv')
+    print(s, df['Specificity'].value_counts().to_dict())
+"

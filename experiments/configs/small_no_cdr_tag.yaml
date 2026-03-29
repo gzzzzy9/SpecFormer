@@ -1,0 +1,35 @@
+# SpecFormer small config (~0.5M params)
+# d_model=128, n_layers=2, n_heads=4
+
+model:
+  d_model: 128
+  n_heads: 4
+  n_layers: 2
+  d_ff: 512
+  dropout: 0.1
+  max_seq_len: 150
+  num_classes: null
+  use_cdr_tag: false
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  splits_dir: data/splits
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+
+training:
+  epochs: 100
+  batch_size: 64
+  lr: 1.0e-4
+  weight_decay: 1.0e-2
+  warmup_steps: 1000
+  early_stopping_patience: 10
+  seed: 42
+  num_workers: 8
+
+logging:
+  project: specformer
+  log_every: 50
+  save_dir: experiments/checkpoints/small_no_cdr_tag
