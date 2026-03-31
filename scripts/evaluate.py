@@ -18,25 +18,54 @@ import argparse
 import json
 import sys
 from pathlib import Path
-
 import torch
 import torch.nn.functional as F
 import yaml
 import pandas as pd
 import numpy as np
-
-try:
-    from sklearn.metrics import classification_report, confusion_matrix
-    HAS_SKLEARN = True
-except Exception:
-    HAS_SKLEARN = False
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from specformer.dataset import BCRDataset
 from specformer.model import SpecFormer
 from specformer.tokenizer import BCRTokenizer
 from specformer.trainer import load_checkpoint
+
+try:
+    from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+    HAS_SKLEARN = True
+    print('Sklearn found. Will use sklearn for evaluation metrics')
+except Exception:
+    HAS_SKLEARN = False
+    print('Sklearn not found.')
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+# ---------------------------------------------------------------------------
+# Pure-Python AUROC (no sklearn dependency)
+# ---------------------------------------------------------------------------
+
+def binary_auroc(labels, scores, pos_class):
+    """One-vs-Rest AUROC for one class."""
+    binary_labels = [1 if l == pos_class else 0 for l in labels]
+    paired = sorted(zip(scores, binary_labels), key=lambda x: -x[0])
+    
+    n_pos = sum(binary_labels)
+    n_neg = len(binary_labels) - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    
+    tp, fp = 0, 0
+    auc = 0.0
+    prev_fp = 0
+    for score, label in paired:
+        if label == 1:
+            tp += 1
+        else:
+            fp += 1
+            auc += tp * (fp - prev_fp)
+            prev_fp = fp
+    # remaining
+    auc += tp * (n_neg - prev_fp)
+    return auc / (n_pos * n_neg)
 
 
 def evaluate(cfg: dict, checkpoint_path: str, out_dir: str) -> None:
@@ -114,9 +143,12 @@ def evaluate(cfg: dict, checkpoint_path: str, out_dir: str) -> None:
         cm_df = pd.DataFrame(cm, index=target_names, columns=target_names)
         print("=== Confusion Matrix ===")
         print(cm_df.to_string())
+        auroc = roc_auc_score(all_labels, all_probs, multi_class="ovr", average="macro")
+        print(f"\nMacro AUROC: {auroc:.4f}")
     else:
-        print(f"{'Class':<10}  {'Precision':>10}  {'Recall':>8}  {'F1':>8}  {'Support':>8}")
-        print("-" * 52)
+        print(f"{'Class':<10}  {'Precision':>10}  {'Recall':>8}  {'F1':>8}  {'AUROC':>8}  {'Support':>8}")
+        print("-" * 62)
+        aurocs = []
         for cls_idx, cls_name in enumerate(target_names):
             tp = sum(p == cls_idx and l == cls_idx for p, l in zip(all_preds, all_labels))
             fp = sum(p == cls_idx and l != cls_idx for p, l in zip(all_preds, all_labels))
@@ -124,7 +156,15 @@ def evaluate(cfg: dict, checkpoint_path: str, out_dir: str) -> None:
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
             recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
             f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-            print(f"{cls_name:<10}  {precision:>10.4f}  {recall:>8.4f}  {f1:>8.4f}  {tp+fn:>8}")
+            
+            # One-vs-Rest AUROC
+            scores = [all_probs[i][cls_idx] for i in range(len(all_labels))]
+            auroc  = binary_auroc(all_labels, scores, cls_idx)
+            aurocs.append(auroc)
+            
+            print(f"{cls_name:<10}  {precision:>10.4f}  {recall:>8.4f}  {f1:>8.4f}  {auroc:>8.4f}  {tp+fn:>8}")
+
+        print(f"\nMacro AUROC: {sum(a for a in aurocs if not (a!=a)) / sum(1 for a in aurocs if not (a!=a)):.4f}")
 
     # ---- Build per-sequence result DataFrame ----
     rows = []
@@ -178,6 +218,45 @@ def evaluate(cfg: dict, checkpoint_path: str, out_dir: str) -> None:
     borderline_path = out_dir / "predictions_borderline.csv"
     borderline.to_csv(borderline_path, index=False)
     print(f"\nBorderline correct (confidence < 0.6) → {borderline_path}  ({len(borderline)} sequences)")
+    
+    # ---- Save results.json (for learning curve plotting) ----
+    # Compute per-class metrics for JSON
+    per_class_results = {}
+    aurocs_for_json = []
+    for cls_idx, cls_name in enumerate(target_names):
+        tp = sum(p == cls_idx and l == cls_idx for p, l in zip(all_preds, all_labels))
+        fp = sum(p == cls_idx and l != cls_idx for p, l in zip(all_preds, all_labels))
+        fn = sum(p != cls_idx and l == cls_idx for p, l in zip(all_preds, all_labels))
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        scores = [float(all_probs[i][cls_idx]) for i in range(len(all_labels))]
+        auroc  = binary_auroc(all_labels, scores, cls_idx)
+        aurocs_for_json.append(auroc)
+        per_class_results[cls_name] = {
+            "precision": round(precision, 4),
+            "recall":    round(recall,    4),
+            "f1":        round(f1,        4),
+            "auroc":     round(auroc, 4) if auroc == auroc else None,
+            "support":   tp + fn,
+        }
+
+    valid_aurocs = [a for a in aurocs_for_json if a == a]
+    macro_auroc  = float(np.mean(valid_aurocs)) if valid_aurocs else float("nan")
+
+    # antigen_auroc: for binary experiments, the non-naive class AUROC
+    antigen_cls  = next((k for k in per_class_results if k != "naive"), None)
+    antigen_auroc = per_class_results[antigen_cls]["auroc"] if antigen_cls else macro_auroc
+
+    results_json = {
+        "per_class":    per_class_results,
+        "macro_auroc":  round(macro_auroc, 4),
+        "antigen_auroc": antigen_auroc,
+    }
+    results_path = out_dir / "results.json"
+    with open(results_path, "w") as f:
+        json.dump(results_json, f, indent=2)
+    print(f"Results saved → {results_path}")
 
 
 if __name__ == "__main__":

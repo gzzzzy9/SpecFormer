@@ -31,3 +31,14 @@ for s in ['train','val','test']:
     df = pd.read_csv(f'data/splits/clone_filtered_max3_with_naive/{s}.csv')
     print(s, df['Specificity'].value_counts().to_dict())
 "
+
+for ANTIGEN in RBD; do
+    for N in all; do
+        sbatch \
+            --job-name=${ANTIGEN}_${N} \
+            --output=experiments/logs/binary/${ANTIGEN}_${N}_%j_out.txt \
+            --error=experiments/logs/binary/${ANTIGEN}_${N}_%j_err.txt \
+            --export=ALL,ANTIGEN=$ANTIGEN,N_CLONES=$N,SEED=42 \
+            scripts/run_binary_classification.sh
+    done
+done
