@@ -32,8 +32,8 @@ for s in ['train','val','test']:
     print(s, df['Specificity'].value_counts().to_dict())
 "
 
-for ANTIGEN in RBD; do
-    for N in all; do
+for ANTIGEN in RBD Qb; do
+    for N in 100 500 1000 2000 5000 10000 20000 all; do
         sbatch \
             --job-name=${ANTIGEN}_${N} \
             --output=experiments/logs/binary/${ANTIGEN}_${N}_%j_out.txt \

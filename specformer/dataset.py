@@ -147,7 +147,11 @@ def make_dataloaders(
     splits_dir    = Path(splits_dir)
     processed_dir = Path(processed_dir)
 
-    label_map_path = processed_dir / "label_map.json"
+    # Prefer label_map.json from splits_dir (binary experiments),
+    # fall back to processed_dir (standard 3-class experiments)
+    splits_label_map    = splits_dir    / "label_map.json"
+    processed_label_map = processed_dir / "label_map.json"
+    label_map_path = splits_label_map if splits_label_map.exists() else processed_label_map
     with open(label_map_path) as f:
         label_map = json.load(f)
 

@@ -77,7 +77,15 @@ def main(cfg: dict) -> None:
     )
 
     # ---- Label map ----
-    label_map_path = Path(cfg["data"]["processed_dir"]) / "label_map.json"
+    # Check for label_map in splits_dir first (for binary classification), then fallback to processed_dir
+    splits_label_map = Path(cfg["data"]["splits_dir"]) / "label_map.json"
+    processed_label_map = Path(cfg["data"]["processed_dir"]) / "label_map.json"
+
+    if splits_label_map.exists():
+        label_map_path = splits_label_map
+        print(f"Using label_map from splits_dir: {label_map_path}")
+    else:
+        label_map_path = processed_label_map
     with open(label_map_path) as f:
         label_map = json.load(f)
     num_classes = len(label_map)
