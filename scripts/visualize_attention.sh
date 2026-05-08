@@ -25,10 +25,12 @@ echo ""
 
 # ---- Run ----
 python scripts/attention_viz.py \
-    --checkpoint experiments/checkpoints/small/seed42/best_model.pt \
+    --checkpoint experiments/checkpoints/binary/RBD_vs_naive_all/seed2026/best_model.pt \
     --config     experiments/configs/small.yaml \
-    --n_samples  1000 \
-    --out_dir    experiments/logs/attention/
+    --splits_dir data/splits/clone_filtered_max3 \
+    --processed_dir data/processed \
+    --n_samples  -1 \
+    --out_dir    experiments/logs/attention/seed42/
 
 echo ""
 echo "End: $(date)"

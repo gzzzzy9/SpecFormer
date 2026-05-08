@@ -63,7 +63,7 @@ def main(cfg: dict) -> None:
     # ---- Tokenizer ----
     tok = BCRTokenizer(
         max_length=cfg["model"]["max_seq_len"],
-        tag_cdrs=cfg["model"].get("use_cdr_tag", True)
+        tag_cdrs=True,
     )
 
     # ---- DataLoaders ----
@@ -77,15 +77,12 @@ def main(cfg: dict) -> None:
     )
 
     # ---- Label map ----
-    # Check for label_map in splits_dir first (for binary classification), then fallback to processed_dir
-    splits_label_map = Path(cfg["data"]["splits_dir"]) / "label_map.json"
+    # Prefer label_map.json from splits_dir (for binary experiments),
+    # fall back to processed_dir (for standard 3-class experiments)
+    splits_label_map    = Path(cfg["data"]["splits_dir"])  / "label_map.json"
     processed_label_map = Path(cfg["data"]["processed_dir"]) / "label_map.json"
-
-    if splits_label_map.exists():
-        label_map_path = splits_label_map
-        print(f"Using label_map from splits_dir: {label_map_path}")
-    else:
-        label_map_path = processed_label_map
+    label_map_path = splits_label_map if splits_label_map.exists() else processed_label_map
+    print(f"Using label_map: {label_map_path}")
     with open(label_map_path) as f:
         label_map = json.load(f)
     num_classes = len(label_map)
@@ -146,6 +143,10 @@ if __name__ == "__main__":
         "--splits_dir", default=None,
         help="Override splits_dir in config (e.g. data/splits/clone_filtered)"
     )
+    parser.add_argument(
+        "--save_dir", default=None,
+        help="Override save_dir in config (e.g. experiments/checkpoints/binary/RBD_vs_naive)"
+    )
     args = parser.parse_args()
     cfg  = load_config(args.config)
 
@@ -159,5 +160,10 @@ if __name__ == "__main__":
     if args.splits_dir is not None:
         cfg["data"]["splits_dir"] = args.splits_dir
         print(f"splits_dir overridden to {args.splits_dir}")
+
+    # Override save_dir if provided via CLI (after seed suffix is applied)
+    if args.save_dir is not None:
+        cfg["logging"]["save_dir"] = args.save_dir
+        print(f"save_dir overridden to {args.save_dir}")
 
     main(cfg)

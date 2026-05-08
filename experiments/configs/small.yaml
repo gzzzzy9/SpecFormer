@@ -25,7 +25,7 @@ training:
   lr: 1.0e-4
   weight_decay: 1.0e-2
   warmup_steps: 1000
-  early_stopping_patience: 10
+  early_stopping_patience: 20
   seed: 42
   num_workers: 8
 

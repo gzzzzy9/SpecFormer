@@ -76,7 +76,10 @@ def evaluate(cfg: dict, checkpoint_path: str, out_dir: str) -> None:
 
     tok = BCRTokenizer(max_length=cfg["model"]["max_seq_len"], tag_cdrs=True)
 
-    label_map_path = Path(cfg["data"]["processed_dir"]) / "label_map.json"
+    splits_label_map    = Path(cfg["data"]["splits_dir"])    / "label_map.json"
+    processed_label_map = Path(cfg["data"]["processed_dir"]) / "label_map.json"
+    label_map_path = splits_label_map if splits_label_map.exists() else processed_label_map
+    print(f"Using label_map: {label_map_path}")
     with open(label_map_path) as f:
         label_map = json.load(f)
     id2label    = {v: k for k, v in label_map.items()}

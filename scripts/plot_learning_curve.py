@@ -1,114 +1,198 @@
 """
 plot_learning_curve.py
 ----------------------
-After all binary experiments finish, collect AUROC results
-and plot learning curves for HA / Qb / RBD vs naive.
+Collect metrics from binary experiments across multiple seeds
+and plot learning curves with mean ± SD.
 
 Usage
 -----
 python scripts/plot_learning_curve.py \
-    --eval_dir  experiments/logs/binary/ \
-    --splits_base data/splits/binary/ \
-    --out       experiments/logs/learning_curve.png
+    --eval_dir experiments/logs/binary/ \
+    --splits_dir data/splits/binary/ \
+    --out      experiments/logs/learning_curve.png
 """
 
-from __future__ import annotations
-
-import argparse
 import json
+import argparse
 from pathlib import Path
 
+import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
+import os
+import matplotlib.font_manager as fm
+# 获取字体文件的绝对路径
+font_path = os.path.abspath('fonts/helvetica-255/Helvetica.ttf')
 
+# 检查文件是否存在
+if os.path.exists(font_path):
+    # 核心：直接把这个路径注册到 Matplotlib
+    fm.fontManager.addfont(font_path)
+    # 设置为默认字体
+    plt.rcParams['font.sans-serif'] = ['Helvetica']
+else:
+    print(f"警告：找不到字体文件 {font_path}，将使用系统默认字体")
 
-N_CLONES_LIST = [100, 200, 500, 1000, 2000, 5000, "all"]
 ANTIGENS      = ["HA", "Qb", "RBD"]
-COLORS        = {"HA": "#F59E0B", "Qb": "#14B8A6", "RBD": "#8B5CF6"}
+N_CLONES_LIST = [100, 200, 500, 1000, 2000, 5000, 10000, 20000, "all"]
+SEEDS         = [42, 123, 2026]
+COLORS        = {"HA": "#54d5c7", "Qb": "#edba38", "RBD": "#f65150"}
+MARKERS       = {"HA": "^", "Qb": "s", "RBD": "o"}
+METRICS       = ["auroc", "f1", "precision", "recall"]
+METRIC_LABELS = {
+    "auroc":     "AUROC",
+    "f1":        "F1",
+    "precision": "Precision",
+    "recall":    "Recall",
+}
 
 
-def load_results(eval_dir: str, splits_base: str) -> dict:
+def collect_results(eval_dir: str, splits_dir: str) -> dict:
     """
-    Expects evaluate.py to have saved a results.json with AUROC per experiment.
-    Falls back to reading predictions_all.csv and computing AUROC manually.
+    Returns:
+        {antigen: {actual_n: {metric: [val_seed1, val_seed2, ...]}}}
     """
-    results = {ag: {"n_clones": [], "auroc": []} for ag in ANTIGENS}
+    results = {ag: {} for ag in ANTIGENS}
 
     for antigen in ANTIGENS:
         for n in N_CLONES_LIST:
-            exp_name = f"{antigen}_vs_naive_{n}"
-            res_path = Path(eval_dir) / exp_name / "results.json"
-
-            if not res_path.exists():
-                print(f"  [SKIP] {res_path} not found")
+            # Get actual n_clones from meta.json (same for all seeds)
+            meta_path = Path(splits_dir) / f"{antigen}_vs_naive_{n}" / "meta.json"
+            if not meta_path.exists():
+                print(f"  [SKIP meta] {meta_path}")
                 continue
+            with open(meta_path) as f:
+                meta = json.load(f)
+            actual_n = meta.get("n_clones", n)
 
-            with open(res_path) as f:
-                res = json.load(f)
+            metric_vals = {m: [] for m in METRICS}
+            n_found = 0
 
-            auroc = res.get("antigen_auroc", res.get("macro_auroc"))
-            if auroc is None:
-                continue
+            for seed in SEEDS:
+                path = (Path(eval_dir) / f"{antigen}_vs_naive_{n}"
+                        / f"seed{seed}" / "results.json")
+                if not path.exists():
+                    print(f"  [SKIP] {path}")
+                    continue
+                with open(path) as f:
+                    res = json.load(f)
 
-            # Get actual n_clones from meta.json
-            meta_path = Path(splits_base) / exp_name / "meta.json"
-            if meta_path.exists():
-                with open(meta_path) as f:
-                    meta = json.load(f)
-                actual_n = meta["n_clones"]
-            else:
-                actual_n = n if n != "all" else 99999
+                antigen_cls = res["per_class"].get("antigen", {})
+                metric_vals["auroc"].append(res.get("antigen_auroc", float("nan")))
+                metric_vals["f1"].append(antigen_cls.get("f1", float("nan")))
+                metric_vals["precision"].append(antigen_cls.get("precision", float("nan")))
+                metric_vals["recall"].append(antigen_cls.get("recall", float("nan")))
+                n_found += 1
 
-            results[antigen]["n_clones"].append(actual_n)
-            results[antigen]["auroc"].append(auroc)
+            if n_found > 0:
+                results[antigen][actual_n] = metric_vals
+                auroc_mean = np.mean(metric_vals["auroc"])
+                auroc_std  = np.std(metric_vals["auroc"])
+                print(f"  {antigen} n={actual_n}: "
+                      f"AUROC={auroc_mean:.4f} ± {auroc_std:.4f}  "
+                      f"F1={np.mean(metric_vals['f1']):.4f} ± {np.std(metric_vals['f1']):.4f}  "
+                      f"Precision={np.mean(metric_vals['precision']):.4f} ± {np.std(metric_vals['precision']):.4f}  "
+                      f"Recall={np.mean(metric_vals['recall']):.4f} ± {np.std(metric_vals['recall']):.4f} "
+                      f"(n_seeds={n_found})")
 
     return results
 
 
+import matplotlib.pyplot as plt
+import numpy as np
+
 def plot(results: dict, out_path: str) -> None:
-    fig, ax = plt.subplots(figsize=(8, 5))
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
+    # 为了让 2x2 的子图接近正方形，figsize 设为宽高接近的比例
+    # 增加高度以留出底部图例的空间
+    fig, axes = plt.subplots(2, 2, figsize=(11, 15))
+    axes_flat = axes.flatten()
 
-    for antigen in ANTIGENS:
-        xs = results[antigen]["n_clones"]
-        ys = results[antigen]["auroc"]
-        if not xs:
-            continue
-        order = sorted(range(len(xs)), key=lambda i: xs[i])
-        xs = [xs[i] for i in order]
-        ys = [ys[i] for i in order]
+    for ax_idx, metric in enumerate(METRICS):
+        ax = axes_flat[ax_idx]
 
-        ax.plot(xs, ys, "o-", color=COLORS[antigen], label=antigen,
-                linewidth=2, markersize=7)
+        for antigen in ANTIGENS:
+            data = results[antigen]
+            if not data:
+                continue
 
-    ax.axhline(0.5, color="#94A3B8", linestyle="--", linewidth=1, label="Random")
-    ax.axhline(0.9, color="#94A3B8", linestyle=":",  linewidth=1, alpha=0.6)
+            xs    = sorted(data.keys())
+            means = [np.nanmean(data[x][metric]) for x in xs]
+            stds  = [np.nanstd(data[x][metric])  for x in xs]
 
-    ax.set_xscale("log")
-    ax.set_xlabel("Number of antigen clones", fontsize=12)
-    ax.set_ylabel("AUROC (antigen vs naive)", fontsize=12)
-    ax.set_title("Learning curve: antigen-specificity detection", fontsize=13)
-    ax.set_ylim(0.4, 1.02)
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3, linestyle="--")
-    for sp in ax.spines.values():
-        sp.set_edgecolor("#CCCCCC")
+            ax.plot(xs, means,
+                    marker=MARKERS[antigen],
+                    color=COLORS[antigen],
+                    label=antigen,
+                    linewidth=2,
+                    markersize=7)
 
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"Saved → {out_path}")
+            ax.fill_between(xs,
+                            [m - s for m, s in zip(means, stds)],
+                            [m + s for m, s in zip(means, stds)],
+                            color=COLORS[antigen],
+                            alpha=0.15)
+
+            # 标注最后一个点
+            ax.annotate(f"{means[-1]:.3f}",
+                        xy=(xs[-1], means[-1]),
+                        xytext=(6, 0),
+                        textcoords="offset points",
+                        fontsize=9,
+                        color=COLORS[antigen])
+
+        # 核心设置
+        ax.set_xscale("log")
+        ax.set_title(METRIC_LABELS[metric], fontsize=16, fontweight="bold", pad=0)
+        
+        # 根据你的要求设置 y 轴范围
+        ax.set_ylim(0.5 if ax_idx == 0 else 0, 1.05)
+        
+        # 移除子图各自的 xlabel，稍后统一设置
+        ax.set_xlabel("")
+        
+        # 设置网格
+        ax.grid(True, alpha=0.2, linestyle="--")
+
+        # 移除右上边框
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        # 强制子图为正方形 (Adjustable 参数允许在保持比例的同时填充 layout)
+        ax.set_box_aspect(1) 
+
+    # --- 统一全局设置 ---
+
+    # 1. 统一 X 轴标签 (y 坐标根据布局微调)
+    fig.supxlabel("Number of antigen clones (Train+Val+Test)", fontsize=18, y=0.08)
+    fig.suptitle(f"Learning curves of antigen-specificity detection\n"
+        f"(mean ± SD, {len(SEEDS)} seeds)",
+        fontsize=18, y=1.01
+    )
+
+    # 2. 提取图例并统一放置
+    handles, labels = axes_flat[0].get_legend_handles_labels()
+    fig.legend(handles, labels, 
+               loc='lower center', 
+               ncol=len(ANTIGENS), 
+               bbox_to_anchor=(0.5, 0.02), 
+               fontsize=18, 
+               frameon=False)
+
+    # 3. 调整子图间距，rect 为整体内容留出顶部和底部的空白
+    # hspace 增加垂直间距防止标题和坐标轴重叠
+    plt.tight_layout(rect=[0, 0.1, 1, 0.98], h_pad=3, w_pad=2)
+    
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--eval_dir",    default="experiments/logs/binary/")
-    parser.add_argument("--splits_base", default="data/splits/binary/")
-    parser.add_argument("--out",         default="experiments/logs/learning_curve.png")
+    parser.add_argument("--eval_dir",   default="experiments/logs/binary/")
+    parser.add_argument("--splits_dir", default="data/splits/binary/")
+    parser.add_argument("--out",        default="experiments/logs/learning_curve.png")
     args = parser.parse_args()
 
-    results = load_results(args.eval_dir, args.splits_base)
-    plot(results, args.out)
+    print("=== Collecting results ===")
+    results = collect_results(args.eval_dir, args.splits_dir)
+    plot(results, args.out) 

@@ -37,6 +37,8 @@ from specformer.trainer import load_checkpoint
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import os
+import warnings
+warnings.filterwarnings('ignore')
 
 # 获取字体文件的绝对路径
 font_path = os.path.abspath('fonts/helvetica-255/Helvetica.ttf')
@@ -126,8 +128,6 @@ def plot_cls_attention(tokens, attn_weights, cdr_spans, label, seq_id, out_path)
     cdr_mean = float(cls_attn[sorted(cdr_positions)].mean()) if cdr_positions else 0.0
     fr_mean  = float(cls_attn[fr_positions].mean())          if fr_positions  else 0.0
 
-    fig = plt.figure(figsize=(max(14, real_len * 0.28), 7))
-
     # ── Top panel: bar chart ──
     fig = plt.figure(figsize=(max(14, real_len * 0.28), 5))
     gs  = fig.add_gridspec(1, 2, width_ratios=[5, 1], wspace=0.08)
@@ -183,7 +183,7 @@ def plot_cls_attention(tokens, attn_weights, cdr_spans, label, seq_id, out_path)
     for sp in ax2.spines.values():
         sp.set_edgecolor("#CCCCCC")
 
-    plt.savefig(str(out_path), dpi=500, bbox_inches="tight")
+    # plt.savefig(str(out_path), dpi=500, bbox_inches="tight")
     plt.close("all")
 
     return cdr_mean, fr_mean
@@ -219,7 +219,7 @@ def plot_layer_heatmap(tokens, attn_weights, label, seq_id, out_path):
     cbar.ax.tick_params(colors="black", labelsize=8)
 
     plt.tight_layout()
-    plt.savefig(str(out_path), dpi=500, bbox_inches="tight")
+    # plt.savefig(str(out_path), dpi=500, bbox_inches="tight")
     plt.close("all")
 
 
@@ -227,12 +227,12 @@ def plot_layer_heatmap(tokens, attn_weights, label, seq_id, out_path):
 # Plot 3: Summary CDR vs FR per class
 # ---------------------------------------------------------------------------
 
+import matplotlib.pyplot as plt
+import numpy as np
+from collections import defaultdict
+from pathlib import Path
+
 def plot_summary(results: list, out_path: Path) -> None:
-    """
-    Two-panel summary:
-    Top:    CDR (total) vs Framework mean attention per class
-    Bottom: CDR1 / CDR2 / CDR3 breakdown per class
-    """
     class_data = defaultdict(lambda: {
         "cdr": [], "fr": [], "cdr1": [], "cdr2": [], "cdr3": []
     })
@@ -244,10 +244,29 @@ def plot_summary(results: list, out_path: Path) -> None:
         class_data[r["label"]]["cdr3"].append(r["cdr3_mean"])
 
     labels = sorted(class_data.keys())
-    n      = len(labels)
-    x      = np.arange(n)
+    n = len(labels)
+    x = np.arange(n)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 9))
+    # 提高 DPI 和字体设置
+    plt.rcParams['font.family'] = 'sans-serif'
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12,6))
+
+    # ── 通用样式配置 ──
+    def format_ax(ax, title):
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+        ax.set_ylabel("Mean [CLS] attention", fontsize=11)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=11)
+        # 移除右上边框
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        # 细化剩余边框
+        for sp in ['left', 'bottom']:
+            ax.spines[sp].set_linewidth(0.8)
+            ax.spines[sp].set_color('#333333')
+        # 只保留Y轴网格
+        ax.yaxis.grid(True, linestyle='--', alpha=0.4, zorder=0)
+        ax.legend(loc='upper right', frameon=False, fontsize=10)
 
     # ── Panel 1: CDR total vs Framework ──────────────────────────
     w = 0.35
@@ -256,48 +275,38 @@ def plot_summary(results: list, out_path: Path) -> None:
     fr_s   = [np.std(class_data[l]["fr"])   for l in labels]
     cdr_s  = [np.std(class_data[l]["cdr"])  for l in labels]
 
-    ax1.bar(x - w/2, fr_m,  w, label="Framework",   color="#3B82F6",
-            yerr=fr_s,  capsize=4, error_kw={"ecolor": "white", "capthick": 1.5})
-    ax1.bar(x + w/2, cdr_m, w, label="CDR regions", color="#EF4444",
-            yerr=cdr_s, capsize=4, error_kw={"ecolor": "white", "capthick": 1.5})
+    # zorder=3 确保柱子在网格线上方
+    ax1.bar(x - w/2, fr_m,  w, label="Framework",  color="#8dcdd5",
+            yerr=fr_s, capsize=5, linewidth=0.8,
+            error_kw={"ecolor": "#333333", "capthick": 0.5}, zorder=3)
+    ax1.bar(x + w/2, cdr_m, w, label="CDR regions", color="#e6846d", 
+            yerr=cdr_s, capsize=5, linewidth=0.8,
+            error_kw={"ecolor": "#333333", "capthick": 0.5}, zorder=3)
 
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, fontsize=12)
-    ax1.set_ylabel("Mean [CLS] attention", fontsize=10)
-    ax1.set_title("CDR vs FR attention summary", fontsize=12, pad=8)
-    ax1.tick_params(colors="black")
-    ax1.legend(labelcolor="black", framealpha=0.3, fontsize=9)
-    for sp in ax1.spines.values():
-        sp.set_edgecolor("#CCCCCC")
+    format_ax(ax1, "Attention: CDR vs FR")
+    ax1.set_ylim(0, 0.03)
 
     # ── Panel 2: CDR1 / CDR2 / CDR3 breakdown ────────────────────
-    w3     = 0.22
-    colors = {"cdr1": "#60A5FA", "cdr2": "#34D399", "cdr3": "#F87171"}
-    labels_cdr = ["CDR1", "CDR2", "CDR3"]
+    w3 = 0.25
+    cdr_colors = ["#9cbedb", "#a9d5a5", "#f08f92"] 
+    cdr_keys   = ["cdr1", "cdr2", "cdr3"]
+    cdr_labels = ["CDR1", "CDR2", "CDR3"]
     offsets    = [-w3, 0, w3]
 
-    for (cdr_key, color, label_cdr, offset) in zip(
-        ["cdr1", "cdr2", "cdr3"], colors.values(), labels_cdr, offsets
-    ):
-        means = [np.mean(class_data[l][cdr_key]) for l in labels]
-        stds  = [np.std(class_data[l][cdr_key])  for l in labels]
-        ax2.bar(x + offset, means, w3, label=label_cdr, color=color,
-                yerr=stds, capsize=3,
-                error_kw={"ecolor": "white", "capthick": 1.2})
+    for k, color, l_cdr, off in zip(cdr_keys, cdr_colors, cdr_labels, offsets):
+        m = [np.mean(class_data[l][k]) for l in labels]
+        s = [np.std(class_data[l][k])  for l in labels]
+        ax2.bar(x + off, m, w3, label=l_cdr, color=color,
+                yerr=s, capsize=4, linewidth=0.8,
+                error_kw={"ecolor": "#333333", "capthick": 0.5}, zorder=3)
 
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(labels, fontsize=12)
-    ax2.set_ylabel("Mean [CLS] attention", fontsize=10)
-    ax2.set_title("CDR1 / CDR2 / CDR3 attention breakdown by antigen class", fontsize=12, pad=8)
-    ax2.tick_params(colors="black")
-    ax2.legend(labelcolor="black", framealpha=0.3, fontsize=9)
-    for sp in ax2.spines.values():
-        sp.set_edgecolor("#CCCCCC")
+    format_ax(ax2, "Attention across CDR regions")
+    ax2.set_ylim(0, 0.03)
 
-    plt.tight_layout(pad=2.0)
-    plt.savefig(str(out_path), dpi=500, bbox_inches="tight")
+    plt.tight_layout(pad=3.0)
+    plt.savefig(str(out_path), dpi=600, bbox_inches="tight") # 提高到600DPI
     plt.close("all")
-    print(f"Saved summary → {out_path}")
+    print(f"Professional summary saved → {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +351,10 @@ def main(args):
     for i in range(len(dataset)):
         label_to_idx[dataset.labels[i]].append(i)
 
-    n_per_class = max(1, args.n_samples // len(label_map))
+    if args.n_samples == -1:
+        n_per_class = max(len(idxs) for idxs in label_to_idx.values())
+    else:
+        n_per_class = max(1, args.n_samples // len(label_map))
     selected = []
     rng = np.random.default_rng(42)
     for label_idx, indices in label_to_idx.items():
@@ -385,28 +397,40 @@ def main(args):
         cls_path   = out_dir / f"{label_str}_{si:03d}_cls.png"
         layer_path = out_dir / f"{label_str}_{si:03d}_layers.png"
 
-        cdr_mean, fr_mean = plot_cls_attention(
-            tok_list, attn_weights, cdr_spans, label_str, seq_id, cls_path
-        )
-        plot_layer_heatmap(
-            tok_list, attn_weights, label_str, seq_id, layer_path
-        )
+        if args.n_samples != -1:
+            cdr_mean, fr_mean = plot_cls_attention(
+                tok_list, attn_weights, cdr_spans, label_str, seq_id, cls_path
+            )
+            plot_layer_heatmap(
+                tok_list, attn_weights, label_str, seq_id, layer_path
+            )
+        else:
+            # 只计算数值，不画图
+            cls_attn = compute_cls_attn(attn_weights, real_len, tok_list)
+            cdr_positions_tmp = set()
+            for s, e in cdr_spans.values():
+                cdr_positions_tmp.update(range(s + 1, e))
+            fr_positions_tmp = [
+                i for i, t in enumerate(tok_list)
+                if t not in ("<cls>", "<eos>", "<pad>", "<cdr1>", "<cdr2>", "<cdr3>")
+                and i not in cdr_positions_tmp
+            ]
+            cdr_mean = float(cls_attn[sorted(cdr_positions_tmp)].mean()) if cdr_positions_tmp else 0.0
+            fr_mean  = float(cls_attn[fr_positions_tmp].mean()) if fr_positions_tmp else 0.0
 
         # Per-CDR attention
-        cls_attn = compute_cls_attn(attn_weights, real_len, tok_list)
         cdr_detail = {}
+        cdr_internal = []
         for cdr_name, (s, e) in cdr_spans.items():
             positions = list(range(s + 1, e))
             cdr_detail[cdr_name] = float(cls_attn[positions].mean()) if positions else 0.0
-            
-        marker_positions = [i for i, t in enumerate(tok_list) 
+            cdr_internal.extend(positions)
+
+        marker_positions = [i for i, t in enumerate(tok_list)
                     if t in ("<cdr1>", "<cdr2>", "<cdr3>")]
         marker_attn = float(np.mean([cls_attn[p] for p in marker_positions])) \
                     if marker_positions else 0.0
-        
-        cdr_internal = []
-        for s, e in cdr_spans.items():
-            cdr_internal.extend(range(cdr_spans[s][0] + 1, cdr_spans[s][1]))
+
         cdr_internal_attn = float(np.mean([cls_attn[p] for p in cdr_internal])) \
                             if cdr_internal else 0.0
 
@@ -422,7 +446,7 @@ def main(args):
             "cdr_internal_attn": cdr_internal_attn, 
         })
 
-        if (si + 1) % 5 == 0:
+        if (si + 1) % 100 == 0:
             print(f"  {si+1}/{len(selected)} done")
 
     plot_summary(summary, out_dir / "summary_cdr_vs_fr.png")
@@ -438,4 +462,8 @@ if __name__ == "__main__":
                         choices=["train", "val", "test"])
     parser.add_argument("--n_samples",  type=int, default=30)
     parser.add_argument("--out_dir",    default="experiments/logs/attention/")
+    parser.add_argument("--splits_dir",     default=None,
+                        help="Override splits_dir in config")
+    parser.add_argument("--processed_dir",  default=None,
+                        help="Override processed_dir in config (for label_map.json)")
     main(parser.parse_args())

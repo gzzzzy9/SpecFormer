@@ -33,7 +33,19 @@ for s in ['train','val','test']:
 "
 
 for ANTIGEN in RBD Qb; do
-    for N in 100 500 1000 2000 5000 10000 20000 all; do
+    for N in 10000 20000; do
+        for SEED in 123 2026; do
+            sbatch \
+                --job-name=${ANTIGEN}_${N} \
+                --output=experiments/logs/binary/${ANTIGEN}_${N}_s${SEED}_%j_out.txt \
+                --export=ALL,ANTIGEN=$ANTIGEN,N_CLONES=$N,SEED=$SEED \
+                scripts/run_binary_classification.sh
+        done
+    done
+done
+
+for ANTIGEN in HA; do
+    for N in 100 200 500 1000 2000 all; do
         sbatch \
             --job-name=${ANTIGEN}_${N} \
             --output=experiments/logs/binary/${ANTIGEN}_${N}_%j_out.txt \
@@ -42,3 +54,9 @@ for ANTIGEN in RBD Qb; do
             scripts/run_binary_classification.sh
     done
 done
+
+# 画AUROC, Precision, Recall, F1
+python scripts/plot_learning_curve.py \
+    --eval_dir   experiments/logs/binary/ \
+    --splits_dir data/splits/binary/ \
+    --out        experiments/logs/binary/learning_curve.png

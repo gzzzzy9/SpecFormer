@@ -63,7 +63,8 @@ echo "=== Step 2: Training ==="
 python scripts/train.py \
     --config     $CONFIG \
     --seed       $SEED \
-    --splits_dir $SPLITS_DIR
+    --splits_dir $SPLITS_DIR \
+    --save_dir    $CKPT_DIR
 
 if [ $? -ne 0 ]; then
     echo "Training failed. Exiting."
@@ -71,7 +72,6 @@ if [ $? -ne 0 ]; then
 fi
 
 # Move checkpoint to experiment-specific directory
-cp experiments/checkpoints/small/seed${SEED}/best_model.pt $CKPT_DIR/best_model.pt
 echo ""
 
 # ── Step 3: Evaluate ─────────────────────────────────────────────────────────
