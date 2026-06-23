@@ -5,14 +5,15 @@ Antigen vs antigen binary classification (e.g. Qb vs RBD) with MMseqs2-based
 clonotype definition. Adapted from preprocess_binary_antigen.py.
 
 Clonotype = same IGHV gene (allele-stripped) + CDR3 >=80% identity, same length.
+MMseqs2 is called ONCE for all sequences, then V gene filtering is applied in Python.
 
 Usage
 -----
 python scripts/preprocess_binary_antigen_v2.py \
     --processed_dir  data/processed/ \
-    --antigen        Qb \
-    --negative       RBD \
-    --out_dir        data/splits/binary_v2/Qb_vs_RBD_all \
+    --antigen1       Qb \
+    --antigen2       RBD \
+    --out_dir        data/splits/binary/Qb_vs_RBD_all \
     --seed           42
 """
 
@@ -39,74 +40,96 @@ def assign_clone_id_mmseqs2(df: pd.DataFrame,
                              identity: float = MMSEQS2_ID,
                              coverage: float = MMSEQS2_COV,
                              threads: int = 8) -> pd.DataFrame:
+    """
+    Call MMseqs2 ONCE on all CDR3 sequences, then enforce V gene constraint in Python.
+    Two sequences are in the same clone only if:
+      1. Same IGHV gene (allele-stripped)
+      2. In the same MMseqs2 cluster (>=80% CDR3 identity, same length via -c 1.0)
+    """
     df = df.copy()
-    v_gene = df["bestVHit"].str.split("*").str[0]
-    cdr3   = df["aaSeqCDR3"].fillna("")
-    df["_v"]    = v_gene
-    df["_cdr3"] = cdr3
-    df["_len"]  = cdr3.str.len()
-
-    clone_ids = pd.Series([""] * len(df), index=df.index)
-    global_counter = [0]
+    df["_v"]    = df["bestVHit"].str.split("*").str[0]
+    df["_cdr3"] = df["aaSeqCDR3"].fillna("")
+    df["_len"]  = df["_cdr3"].str.len()
+    df["_rowid"] = range(len(df))   # stable integer index for FASTA names
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
 
-        for (v, l), grp in df.groupby(["_v", "_len"]):
-            n = len(grp)
+        # ── Step 1: write all CDR3 sequences to one FASTA ──
+        # Header encodes rowid and V gene so we can recover them after clustering
+        fasta_path = td / "all_cdr3.fasta"
+        with open(fasta_path, "w") as fh:
+            for _, row in df.iterrows():
+                if row["_len"] == 0:
+                    continue
+                # Use rowid as FASTA name; V gene stored separately
+                fh.write(f">{row['_rowid']}\n{row['_cdr3']}\n")
 
-            if l == 0:
-                for idx in grp.index:
-                    clone_ids[idx] = f"EMPTY_{global_counter[0]}"
-                    global_counter[0] += 1
-                continue
+        # ── Step 2: single MMseqs2 call ──
+        out_prefix = td / "cluster"
+        tmp_dir    = td / "tmp"
+        tmp_dir.mkdir(exist_ok=True)
 
-            if n == 1:
-                clone_ids[grp.index[0]] = f"{v}_l{l}_c{global_counter[0]}"
-                global_counter[0] += 1
-                continue
+        cmd = [
+            "mmseqs", "easy-cluster",
+            str(fasta_path), str(out_prefix), str(tmp_dir),
+            "--min-seq-id", str(identity),
+            "-c",           str(coverage),
+            "--cov-mode",   "3",   # coverage of shorter seq → enforces equal length
+            "--threads",    str(threads),
+            "-v",           "0",
+        ]
+        print(f"  Running MMseqs2 on {len(df)} sequences...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"MMseqs2 failed:\n{result.stderr}")
+        print(f"  MMseqs2 done.")
 
-            fasta_path = td / "input.fasta"
-            with open(fasta_path, "w") as fh:
-                for i, (orig_idx, row) in enumerate(grp.iterrows()):
-                    fh.write(f">{i}\n{row['_cdr3']}\n")
+        # ── Step 3: parse cluster TSV (rep \t member) ──
+        cluster_tsv = Path(str(out_prefix) + "_cluster.tsv")
+        rowid_to_mmseqs_rep = {}   # rowid → MMseqs2 representative rowid
 
-            out_prefix = td / "cluster"
-            tmp_dir    = td / "tmp"
-            tmp_dir.mkdir(exist_ok=True)
+        with open(cluster_tsv) as fh:
+            for line in fh:
+                rep, member = line.strip().split("\t")
+                rowid_to_mmseqs_rep[int(member)] = int(rep)
 
-            cmd = [
-                "mmseqs", "easy-cluster",
-                str(fasta_path), str(out_prefix), str(tmp_dir),
-                "--min-seq-id", str(identity),
-                "-c",           str(coverage),
-                "--cov-mode",   "3",
-                "--threads",    str(threads),
-                "-v",           "0",
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"MMseqs2 failed (V={v}, L={l}):\n{result.stderr}")
+    # ── Step 4: apply V gene constraint in Python ──
+    # Final clone_id = (V_gene, MMseqs2_rep) only if same V gene
+    # Sequences with empty CDR3 get their own unique clone
+    rowid_to_v = df.set_index("_rowid")["_v"].to_dict()
 
-            cluster_tsv = Path(str(out_prefix) + "_cluster.tsv")
-            rep_to_cid  = {}
-            row_indices = list(grp.index)
+    global_counter = [0]
+    pair_to_clone  = {}   # (v_gene, mmseqs_rep) → clone_id string
 
-            with open(cluster_tsv) as fh:
-                for line in fh:
-                    rep, member = line.strip().split("\t")
-                    if rep not in rep_to_cid:
-                        rep_to_cid[rep] = global_counter[0]
-                        global_counter[0] += 1
-                    member_orig_idx = row_indices[int(member)]
-                    clone_ids[member_orig_idx] = f"{v}_l{l}_c{rep_to_cid[rep]}"
+    clone_id_list = []
+    for _, row in df.iterrows():
+        rid = row["_rowid"]
+        v   = row["_v"]
 
-            for f in tmp_dir.glob("*"):
-                try: f.unlink()
-                except: pass
+        if row["_len"] == 0:
+            clone_id_list.append(f"EMPTY_{global_counter[0]}")
+            global_counter[0] += 1
+            continue
 
-    df["clone_id"] = clone_ids
-    return df.drop(columns=["_v", "_cdr3", "_len"])
+        mmseqs_rep = rowid_to_mmseqs_rep.get(rid, rid)
+        rep_v      = rowid_to_v.get(mmseqs_rep, v)
+
+        if rep_v == v:
+            # Same V gene as representative → same clone
+            key = (v, mmseqs_rep)
+        else:
+            # Different V gene → treat as its own cluster
+            key = (v, rid)
+
+        if key not in pair_to_clone:
+            pair_to_clone[key] = f"{v}_c{global_counter[0]}"
+            global_counter[0] += 1
+
+        clone_id_list.append(pair_to_clone[key])
+
+    df["clone_id"] = clone_id_list
+    return df.drop(columns=["_v", "_cdr3", "_len", "_rowid"])
 
 
 def split_by_clone(df: pd.DataFrame, seed: int) -> tuple:
@@ -157,35 +180,42 @@ def main(args: argparse.Namespace) -> None:
 
     all_df = pd.read_csv(Path(args.processed_dir) / "sequences.csv")
 
-    # ---- Positive class (antigen) ----
-    antigen_df = all_df[all_df["Specificity"] == args.antigen].copy()
-    print(f"=== Assigning clonotypes (MMseqs2, >=80% CDR3 identity): {args.antigen} ===")
-    antigen_df = assign_clone_id_mmseqs2(antigen_df)
+    # ---- Antigen 1 ----
+    antigen1_df = all_df[all_df["Specificity"] == args.antigen1].copy()
+    print(f"=== Assigning clonotypes (MMseqs2, >=80% CDR3 identity): {args.antigen1} ===")
+    antigen1_df = assign_clone_id_mmseqs2(antigen1_df)
 
-    all_antigen_clones = antigen_df["clone_id"].unique()
-    if args.n_clones is not None and args.n_clones < len(all_antigen_clones):
-        chosen = rng.choice(all_antigen_clones, size=args.n_clones, replace=False)
-        antigen_df = antigen_df[antigen_df["clone_id"].isin(chosen)]
-        print(f"Subsampled to {args.n_clones} clones ({len(antigen_df)} seqs) from {args.antigen}")
+    antigen1_clones = antigen1_df["clone_id"].unique()
+    if args.n_clones is not None and args.n_clones < len(antigen1_clones):
+        chosen = rng.choice(antigen1_clones, size=args.n_clones, replace=False)
+        antigen1_df = antigen1_df[antigen1_df["clone_id"].isin(chosen)]
+        print(f"Subsampled to {args.n_clones} clones ({len(antigen1_df)} seqs) from {args.antigen1}")
     else:
-        print(f"Using all {len(all_antigen_clones)} clones ({len(antigen_df)} seqs) from {args.antigen}")
-    antigen_df["Specificity"] = "antigen"
+        print(f"Using all {len(antigen1_clones)} clones ({len(antigen1_df)} seqs) from {args.antigen1}")
 
-    # ---- Negative class (second antigen) ----
-    negative_df = all_df[all_df["Specificity"] == args.negative].copy()
-    print(f"\n=== Assigning clonotypes (MMseqs2, >=80% CDR3 identity): {args.negative} ===")
-    negative_df = assign_clone_id_mmseqs2(negative_df)
+    # ---- Antigen 2 ----
+    antigen2_df = all_df[all_df["Specificity"] == args.antigen2].copy()
+    print(f"\n=== Assigning clonotypes (MMseqs2, >=80% CDR3 identity): {args.antigen2} ===")
+    antigen2_df = assign_clone_id_mmseqs2(antigen2_df)
+
+    antigen2_clones = antigen2_df["clone_id"].unique()
+    if args.n_clones is not None and args.n_clones < len(antigen2_clones):
+        chosen = rng.choice(antigen2_clones, size=args.n_clones, replace=False)
+        antigen2_df = antigen2_df[antigen2_df["clone_id"].isin(chosen)]
+        print(f"Subsampled to {args.n_clones} clones ({len(antigen2_df)} seqs) from {args.antigen2}")
+    else:
+        print(f"Using all {len(antigen2_clones)} clones ({len(antigen2_df)} seqs) from {args.antigen2}")
 
     # Remove clone_id overlap between the two antigens
-    antigen_clone_ids = set(antigen_df["clone_id"])
-    before     = len(negative_df)
-    negative_df = negative_df[~negative_df["clone_id"].isin(antigen_clone_ids)]
-    print(f"Removed {before - len(negative_df)} {args.negative} seqs with clone_id overlap")
-    print(f"Using all {negative_df['clone_id'].nunique()} clones ({len(negative_df)} seqs) from {args.negative}")
-    negative_df["Specificity"] = "naive"  # keep label for train.py compatibility
+    antigen1_clone_ids = set(antigen1_df["clone_id"])
+    num_before        = len(antigen2_df)
+    antigen2_df       = antigen2_df[~antigen2_df["clone_id"].isin(antigen1_clone_ids)]
+    print(f"Removed {num_before - len(antigen2_df)} {args.antigen2} seqs with clone_id overlap")
+    print(f"Using all {antigen2_df['clone_id'].nunique()} clones ({len(antigen2_df)} seqs) from {args.antigen2}")
+    # Keep original Specificity label (e.g. "RBD")
 
     # ---- Combine and split ----
-    combined = pd.concat([antigen_df, negative_df], ignore_index=True)
+    combined = pd.concat([antigen1_df, antigen2_df], ignore_index=True)
     print(f"\nCombined: {len(combined)} sequences")
     print(combined["Specificity"].value_counts().to_string())
 
@@ -197,7 +227,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"  test:  {len(test)}   {test['Specificity'].value_counts().to_dict()}")
 
     # ---- Save ----
-    label_map = {"antigen": 0, "naive": 1}
+    label_map = {args.antigen1: 0, args.antigen2: 1}
     with open(Path(args.out_dir) / "label_map.json", "w") as f:
         json.dump(label_map, f, indent=2)
 
@@ -206,10 +236,12 @@ def main(args: argparse.Namespace) -> None:
     test.to_csv( Path(args.out_dir) / "test.csv",  index=False)
 
     meta = {
-        "antigen":            args.antigen,
-        "negative":           args.negative,
-        "n_clones":           int(antigen_df["clone_id"].nunique()),
-        "n_seqs":             len(antigen_df),
+        "antigen1":           args.antigen1,
+        "antigen2":           args.antigen2,
+        "n_clones_antigen1":  int(antigen1_df["clone_id"].nunique()),
+        "n_clones_antigen2":  int(antigen2_df["clone_id"].nunique()),
+        "n_seqs_antigen1":    len(antigen1_df),
+        "n_seqs_antigen2":    len(antigen2_df),
         "clonotype_method":   "MMseqs2",
         "mmseqs2_identity":   MMSEQS2_ID,
         "seed":               args.seed,
@@ -223,10 +255,10 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--processed_dir", default="data/processed/")
-    parser.add_argument("--antigen",  required=True, choices=["HA", "Qb", "RBD"],
-                        help="Positive class antigen")
-    parser.add_argument("--negative", required=True, choices=["HA", "Qb", "RBD"],
-                        help="Negative class antigen")
+    parser.add_argument("--antigen1", required=True, choices=["HA", "Qb", "RBD"],
+                        help="First antigen (positive class)")
+    parser.add_argument("--antigen2", required=True, choices=["HA", "Qb", "RBD"],
+                        help="Second antigen (negative class, label='naive' for train.py compat)")
     parser.add_argument("--n_clones", type=int, default=None)
     parser.add_argument("--seed",     type=int, default=42)
     parser.add_argument("--out_dir",  required=True)

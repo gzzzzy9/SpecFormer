@@ -146,7 +146,11 @@ def evaluate(cfg: dict, checkpoint_path: str, out_dir: str) -> None:
         cm_df = pd.DataFrame(cm, index=target_names, columns=target_names)
         print("=== Confusion Matrix ===")
         print(cm_df.to_string())
-        auroc = roc_auc_score(all_labels, all_probs, multi_class="ovr", average="macro")
+        if num_classes == 2:
+            # binary: use probability of class 1
+            auroc = roc_auc_score(all_labels, all_probs[:, 1])
+        else:
+            auroc = roc_auc_score(all_labels, all_probs, multi_class="ovr", average="macro")
         print(f"\nMacro AUROC: {auroc:.4f}")
     else:
         print(f"{'Class':<10}  {'Precision':>10}  {'Recall':>8}  {'F1':>8}  {'AUROC':>8}  {'Support':>8}")
@@ -247,9 +251,13 @@ def evaluate(cfg: dict, checkpoint_path: str, out_dir: str) -> None:
     valid_aurocs = [a for a in aurocs_for_json if a == a]
     macro_auroc  = float(np.mean(valid_aurocs)) if valid_aurocs else float("nan")
 
-    # antigen_auroc: for binary experiments, the non-naive class AUROC
-    antigen_cls  = next((k for k in per_class_results if k != "naive"), None)
-    antigen_auroc = per_class_results[antigen_cls]["auroc"] if antigen_cls else macro_auroc
+    # antigen_auroc: for binary use class 1; for multiclass use non-naive class
+    if num_classes == 2:
+        antigen_cls   = target_names[1]
+        antigen_auroc = per_class_results[antigen_cls]["auroc"]
+    else:
+        antigen_cls   = next((k for k in per_class_results if k != "naive"), None)
+        antigen_auroc = per_class_results[antigen_cls]["auroc"] if antigen_cls else macro_auroc
 
     results_json = {
         "per_class":    per_class_results,
