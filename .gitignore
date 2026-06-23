@@ -34,3 +34,6 @@ wandb/
 
 # Test
 tests/
+
+# External model
+model
