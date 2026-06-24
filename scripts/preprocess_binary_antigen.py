@@ -211,8 +211,6 @@ def main(args: argparse.Namespace) -> None:
     num_before        = len(antigen2_df)
     antigen2_df       = antigen2_df[~antigen2_df["clone_id"].isin(antigen1_clone_ids)]
     print(f"Removed {num_before - len(antigen2_df)} {args.antigen2} seqs with clone_id overlap")
-    print(f"Using all {antigen2_df['clone_id'].nunique()} clones ({len(antigen2_df)} seqs) from {args.antigen2}")
-    # Keep original Specificity label (e.g. "RBD")
 
     # ---- Combine and split ----
     combined = pd.concat([antigen1_df, antigen2_df], ignore_index=True)

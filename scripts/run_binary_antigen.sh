@@ -13,6 +13,11 @@ conda activate specformer
 cd $SLURM_SUBMIT_DIR
 export PYTHONPATH=$SLURM_SUBMIT_DIR:$PYTHONPATH
 export PYTHONUNBUFFERED=1
+# ── Config ───────────────────────────────────────────────────────────────────
+ANTIGEN1=${ANTIGEN1:-Qb}
+ANTIGEN2=${ANTIGEN2:-RBD}
+SEED=${SEED:-42}
+CONFIG=${CONFIG:-experiments/configs/small.yaml}
 
 echo "Job ID:    $SLURM_JOB_ID"
 echo "Node:      $SLURMD_NODENAME"
@@ -22,12 +27,6 @@ echo "Antigen1:  $ANTIGEN1"
 echo "Antigen2:  $ANTIGEN2"
 echo "Seed:      $SEED"
 echo ""
-
-# ── Config ───────────────────────────────────────────────────────────────────
-ANTIGEN1=${ANTIGEN1:-Qb}
-ANTIGEN2=${ANTIGEN2:-RBD}
-SEED=${SEED:-42}
-CONFIG=${CONFIG:-experiments/configs/small.yaml}
 
 EXP_NAME="${ANTIGEN1}_vs_${ANTIGEN2}_all"
 SPLITS_DIR="data/splits/binary/${EXP_NAME}_seed${SEED}"
